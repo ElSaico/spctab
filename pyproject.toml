@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "spctab"
+version = "0.1.0"
+description = ""
+authors = ["Bruno Marques <bruno@bmarques.net>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+music21 = "^9.5.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.1.0"
+flake8 = "^7.2.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
