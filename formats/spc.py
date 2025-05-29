@@ -2,7 +2,7 @@ from collections import namedtuple
 from datetime import datetime
 from io import BytesIO
 from struct import unpack
-from typing import BinaryIO
+from typing import BinaryIO, Type
 
 SPC_MAGIC = b"SNES-SPC700 Sound File Data v0.30\x1a\x1a"
 
@@ -40,7 +40,7 @@ Registers = namedtuple("Registers", "pc a x y psw sp")
 
 
 class SPC:
-    def __init__(self, f: BinaryIO):
+    def __init__(self, f: BinaryIO, ram_class: Type):
         self.magic = f.read(35)
         if self.magic != SPC_MAGIC:
             raise Exception("Invalid SPC file header")
@@ -52,7 +52,7 @@ class SPC:
             )
         self.registers = Registers._make(unpack("<H5B2x", f.read(9)))
         self.id666 = ID666(*unpack("32s32s16s32s11s3s5s32s?B45x", f.read(210)))
-        self.raw_ram = BytesIO(f.read(65536))
+        self.ram = ram_class(BytesIO(f.read(65536)))
         self.dsp_registers = f.read(128)
         f.read(64)
         self.extra_ram = f.read(64)

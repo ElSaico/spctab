@@ -1,8 +1,5 @@
 from io import BytesIO
 from struct import unpack
-from typing import Type
-
-from formats.spc import SPC
 
 NOTE_DURATIONS_V1 = [
     0xC0,
@@ -159,25 +156,37 @@ OPCODES_V4_COMMON = {
 }
 
 
-class AkaoV2RAM:
-    def __init__(self, io: BytesIO, ram_offset: int, opcodes: dict[int, str]):
-        io.seek(ram_offset)
-        self.opcodes = opcodes
-        self.raw = BytesIO(io.read(4096))  # TODO verify size
-        self.ptr = unpack("<8H", self.raw.read(16))
-        self.tracks = [self.get_instructions(addr) for addr in self.ptr]
+class AkaoRAM:
+    ram_offset: int
+    opcodes: dict[int, str]
+    notes: list[str]
+    note_durations: list[int]
 
-    def get_instructions(self, addr):
+    def __init__(self, io: BytesIO):
+        io.seek(self.ram_offset)
+        self.raw = BytesIO(io.read(4096))  # TODO does size differ between versions?
+
+    def get_instructions(self, addr: int):
         self.raw.seek(addr)
         instructions = []
+        min_opcode = min(self.opcodes)
         while True:
             opcode = ord(self.raw.read(1))
-            if opcode >= 0xD2:
-                instruction = {"event": self.opcodes[opcode]}
+            if opcode >= min_opcode:
+                instruction: dict[str, str | int] = {"event": self.opcodes[opcode]}
                 match instruction["event"]:
                     case "EVENT_UNKNOWN2":
                         instruction["arg1"], instruction["arg2"] = unpack(
                             "BB", self.raw.read(2)
+                        )
+                    # V1: first parameter is short
+                    case "EVENT_VOLUME_FADE" | "EVENT_PAN_FADE" | "EVENT_TEMPO_FADE":
+                        instruction["length"], instruction["value"] = unpack(
+                            "BB", self.raw.read(2)
+                        )
+                    case "EVENT_ECHO_VOLUME_FADE":
+                        instruction["length"], instruction["value"] = unpack(
+                            "Bb", self.raw.read(2)
                         )
                     # V1: the order of parameters is delay, length, semitones
                     case "EVENT_PITCH_SLIDE_ON":
@@ -185,10 +194,10 @@ class AkaoV2RAM:
                             instruction["semitones"],
                             instruction["delay"],
                             instruction["length"],
-                        ) = unpack("BBB", self.raw.read(2))
-                    case "EVENT_PAN_LFO_ON":
-                        instruction["depth"], instruction["rate"] = unpack(
-                            "BB", self.raw.read(2)
+                        ) = unpack("bBB", self.raw.read(3))
+                    case "EVENT_PITCH_SLIDE":
+                        instruction["length"], instruction["semitones"] = unpack(
+                            "Bb", self.raw.read(2)
                         )
                     case "EVENT_VIBRATO_ON" | "EVENT_TREMOLO_ON":
                         (
@@ -196,159 +205,100 @@ class AkaoV2RAM:
                             instruction["rate"],
                             instruction["depth"],
                         ) = unpack("BBB", self.raw.read(3))
-                    # V1: first parameter is short
-                    case (
-                        "EVENT_ECHO_VOLUME_FADE"
-                        | "EVENT_TEMPO_FADE"
-                        | "EVENT_VOLUME_FADE"
-                        | "EVENT_PAN_FADE"
-                        | "EVENT_ECHO_FIR_FADE"
-                    ):
-                        instruction["length"], instruction["value"] = unpack(
+                    case "EVENT_PAN_LFO_ON":
+                        instruction["depth"], instruction["rate"] = unpack(
                             "BB", self.raw.read(2)
                         )
-                    case "EVENT_GOTO":
-                        (instruction["addr"],) = unpack(">H", self.raw.read(2))
+                    case "EVENT_PAN_LFO_ON_WITH_DELAY":
+                        (
+                            instruction["delay"],
+                            instruction["rate"],
+                            instruction["depth"],
+                        ) = unpack("BBB", self.raw.read(3))
+                    case "EVENT_ECHO_FEEDBACK_FIR":
+                        instruction["feedback"], instruction["fir"] = unpack(
+                            "bB", self.raw.read(2)
+                        )
+                    case "EVENT_ECHO_FEEDBACK_FADE" | "EVENT_ECHO_FIR_FADE":
+                        instruction["length"], instruction["value"] = unpack(
+                            ">HB", self.raw.read(3)
+                        )
                     case "EVENT_LOOP_BREAK" | "EVENT_CPU_CONTROLED_JUMP_V2":
                         instruction["value"], instruction["addr"] = unpack(
                             ">BH", self.raw.read(3)
                         )
-                    case "EVENT_ECHO_FEEDBACK_FIR":
-                        instruction["feedback"], instruction["fir"] = unpack(
-                            "BB", self.raw.read(2)
-                        )
+                    case "EVENT_GOTO" | "EVENT_CPU_CONTROLED_JUMP":
+                        (instruction["addr"],) = unpack(">H", self.raw.read(2))
                     case (
-                        "EVENT_VOLUME"
-                        | "EVENT_VOLUME_ALT"
-                        | "EVENT_VOLUME_ENVELOPE"
-                        | "EVENT_MASTER_VOLUME"
-                        | "EVENT_LOOP_START"
-                        | "EVENT_PROGCHANGE"
-                        | "EVENT_TUNING"
+                        "EVENT_UNKNOWN1"
+                        | "EVENT_NOP1"
+                        | "EVENT_VOLUME"
+                        | "EVENT_PAN"
                         | "EVENT_NOISE_FREQ"
+                        | "EVENT_OCTAVE"
+                        | "EVENT_TUNING"
+                        | "EVENT_PROGCHANGE"
+                        | "EVENT_VOLUME_ENVELOPE"
+                        | "EVENT_GAIN_RELEASE"
+                        | "EVENT_DURATION_RATE"
                         | "EVENT_ADSR_AR"
                         | "EVENT_ADSR_DR"
                         | "EVENT_ADSR_SL"
                         | "EVENT_ADSR_SR"
-                        | "EVENT_JUMP_TO_SFX_LO"
+                        | "EVENT_LOOP_START"
                         | "EVENT_ONETIME_DURATION"
-                        | "EVENT_PAN"
-                        | "EVENT_TRANSPOSE_ABS"
+                        | "EVENT_JUMP_TO_SFX_LO"
+                        | "EVENT_JUMP_TO_SFX_HI"
+                        | "EVENT_PLAY_SFX"
                         | "EVENT_TEMPO"
                         | "EVENT_ECHO_VOLUME"
-                        | "EVENT_JUMP_TO_SFX_HI"
+                        | "EVENT_MASTER_VOLUME"
+                        | "EVENT_ECHO_FEEDBACK"
+                        | "EVENT_ECHO_FIR"
                         | "EVENT_CPU_CONTROLED_SET_VALUE"
-                        | "EVENT_OCTAVE"
-                        | "EVENT_TRANSPOSE_REL"
+                        | "EVENT_IGNORE_MASTER_VOLUME_BY_PROGNUM"
+                        | "EVENT_VOLUME_ALT"
                     ):
-                        instruction["value"] = ord(self.raw.read(1))
+                        (instruction["value"],) = unpack("B", self.raw.read(1))
+                    case "EVENT_TRANSPOSE_ABS" | "EVENT_TRANSPOSE_REL":
+                        (instruction["value"],) = unpack("b", self.raw.read(1))
             else:
                 instruction = {
                     "event": "EVENT_NOTE",
-                    "note": NOTES_V12[opcode // len(NOTE_DURATIONS_V23)],
-                    "duration": NOTE_DURATIONS_V23[opcode % len(NOTE_DURATIONS_V23)],
+                    "note": self.notes[opcode // len(self.note_durations)],
+                    "duration": self.note_durations[opcode % len(self.note_durations)],
                 }
             instructions.append(instruction)
             if instruction["event"] in ["EVENT_GOTO", "EVENT_END"]:
                 return instructions
 
 
-class AkaoV4RAM:
-    def __init__(self, io: BytesIO, ram_offset: int, opcodes: dict[int, str]):
-        io.seek(ram_offset)
-        self.opcodes = opcodes
-        self.raw = BytesIO(io.read(4096))
+class AkaoV2RAM(AkaoRAM):
+    opcodes = OPCODES_V2
+    notes = NOTES_V12
+    note_durations = NOTE_DURATIONS_V23
+
+    def __init__(self, io: BytesIO):
+        super().__init__(io)
+        self.ptr = unpack("<8H", self.raw.read(16))
+        self.tracks = [self.get_instructions(addr) for addr in self.ptr]
+
+
+class AkaoV4RAM(AkaoRAM):
+    notes = NOTES_V34
+    note_durations = NOTE_DURATIONS_V4
+
+    def __init__(self, io: BytesIO):
+        super().__init__(io)
         self.addr_base, self.addr_end = unpack("<HH", self.raw.read(4))
         self.ptr = unpack("<8H", self.raw.read(16))
         self.ptr_dup = unpack("<8H", self.raw.read(16))
-        self.tracks = [self.get_instructions(addr) for addr in self.ptr]
-
-    def get_instructions(self, addr):
-        self.raw.seek(addr - self.addr_base + 36)
-        instructions = []
-        while True:
-            opcode = ord(self.raw.read(1))
-            if opcode >= 0xC3:
-                instruction = {"event": self.opcodes[opcode]}
-                match instruction["event"]:
-                    case "EVENT_PITCH_SLIDE":
-                        instruction["length"], instruction["semitones"] = unpack(
-                            "BB", self.raw.read(2)
-                        )
-                    case "EVENT_PAN_LFO_ON":
-                        instruction["depth"], instruction["rate"] = unpack(
-                            "BB", self.raw.read(2)
-                        )
-                    case "EVENT_VIBRATO_ON" | "EVENT_TREMOLO_ON":
-                        (
-                            instruction["delay"],
-                            instruction["rate"],
-                            instruction["depth"],
-                        ) = unpack("BBB", self.raw.read(3))
-                    case (
-                        "EVENT_ECHO_VOLUME_FADE"
-                        | "EVENT_ECHO_FEEDBACK_FADE"
-                        | "EVENT_TEMPO_FADE"
-                        | "EVENT_VOLUME_FADE"
-                        | "EVENT_PAN_FADE"
-                        | "EVENT_ECHO_FIR_FADE"
-                    ):
-                        instruction["length"], instruction["value"] = unpack(
-                            "BB", self.raw.read(2)
-                        )
-                    case "EVENT_GOTO":
-                        (instruction["addr"],) = unpack(">H", self.raw.read(2))
-                    case "EVENT_LOOP_BREAK" | "EVENT_CPU_CONTROLED_JUMP_V2":
-                        instruction["value"], instruction["addr"] = unpack(
-                            ">BH", self.raw.read(3)
-                        )
-                    case (
-                        "EVENT_VOLUME"
-                        | "EVENT_VOLUME_ALT"
-                        | "EVENT_MASTER_VOLUME"
-                        | "EVENT_LOOP_START"
-                        | "EVENT_PROGCHANGE"
-                        | "EVENT_TUNING"
-                        | "EVENT_NOISE_FREQ"
-                        | "EVENT_ADSR_AR"
-                        | "EVENT_ADSR_DR"
-                        | "EVENT_ADSR_SL"
-                        | "EVENT_ADSR_SR"
-                        | "EVENT_JUMP_TO_SFX_LO"
-                        | "EVENT_ONETIME_DURATION"
-                        | "EVENT_PAN"
-                        | "EVENT_TRANSPOSE_ABS"
-                        | "EVENT_TEMPO"
-                        | "EVENT_ECHO_VOLUME"
-                        | "EVENT_JUMP_TO_SFX_HI"
-                        | "EVENT_CPU_CONTROLED_SET_VALUE"
-                        | "EVENT_OCTAVE"
-                        | "EVENT_TRANSPOSE_REL"
-                    ):
-                        instruction["value"] = ord(self.raw.read(1))
-            else:
-                instruction = {
-                    "event": "EVENT_NOTE",
-                    "note": NOTES_V34[opcode // len(NOTE_DURATIONS_V4)],
-                    "duration": NOTE_DURATIONS_V4[opcode % len(NOTE_DURATIONS_V4)],
-                }
-            instructions.append(instruction)
-            if instruction["event"] in ["EVENT_GOTO", "EVENT_END"]:
-                return instructions
+        self.tracks = [
+            self.get_instructions(addr - self.addr_base + 36) for addr in self.ptr
+        ]
 
 
-class AkaoSPC(SPC):
-    ram_class: Type
-    ram_offset: int
-    opcodes: dict[int, str]
-
-    def __init__(self, f):
-        super().__init__(f)
-        self.ram = self.ram_class(self.raw_ram, self.ram_offset, self.opcodes)
-
-
-class ChronoTriggerSPC(AkaoSPC):
-    ram_class = AkaoV4RAM
+class ChronoTriggerRAM(AkaoV4RAM):
     ram_offset = 8192
     opcodes = OPCODES_V4_COMMON | {
         244: "EVENT_MASTER_VOLUME",
@@ -366,8 +316,7 @@ class ChronoTriggerSPC(AkaoSPC):
     }
 
 
-class FinalFantasy6SPC(AkaoSPC):
-    ram_class = AkaoV4RAM
+class FinalFantasy6RAM(AkaoV4RAM):
     ram_offset = 7168
     opcodes = OPCODES_V4_COMMON | {
         244: "EVENT_MASTER_VOLUME",
